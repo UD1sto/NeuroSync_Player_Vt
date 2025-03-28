@@ -1,4 +1,4 @@
-import os
+import os, re
 import requests
 import json
 import time
@@ -54,6 +54,8 @@ def get_livepeer_response(messages, chunk_queue=None, max_tokens=256, temperatur
                 
                 # Stream chunks as they come in
                 buffer = ""
+                # Flag to track if we're in the first chunk, where headers are more likely to appear
+                is_first_chunk = True
                 for line in response.iter_lines():
                     if line:
                         line = line.decode('utf-8')
@@ -67,11 +69,28 @@ def get_livepeer_response(messages, chunk_queue=None, max_tokens=256, temperatur
                                     delta = chunk['choices'][0].get('delta', {})
                                     if 'content' in delta:
                                         content = delta['content']
-                                        full_response += content
-                                        buffer += content
                                         
-                                        # Send chunks to TTS when we have a reasonable size
-                                        # or when we hit sentence endings
+                                        # More comprehensive filter for header tokens and markers
+                                        # This handles both inline and standalone header tokens
+                                        content = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>', '', content)
+                                        
+                                        # Special check for the first chunk which often contains headers
+                                        if is_first_chunk:
+                                            # Remove any "assistant" role marker that might be at the start
+                                            content = re.sub(r'^assistant\s*', '', content)
+                                            is_first_chunk = False
+                                        
+                                        # Additional cleanup for any stray tokens
+                                        content = content.replace('<|start_header_id|>', '')
+                                        content = content.replace('<|end_header_id|>', '')
+                                        content = content.replace('assistant', '')
+                                        
+                                        # Only add non-empty content after filtering
+                                        if content.strip():
+                                            full_response += content
+                                            buffer += content
+                                        
+                                        # Send chunks to TTS when we have a reasonable size or sentence endings
                                         if len(buffer) > 50 or any(x in buffer for x in ['.', '!', '?', '\n']):
                                             print(f"Sending chunk: {buffer}")
                                             chunk_queue.put(buffer)
@@ -90,11 +109,22 @@ def get_livepeer_response(messages, chunk_queue=None, max_tokens=256, temperatur
             if hasattr(res, 'choices') and res.choices and len(res.choices) > 0:
                 # If response has choices property with message content structure
                 message_content = res.choices[0].message.content
-                # Remove header if present
-                full_response = message_content.replace("<|start_header_id|>assistant<|end_header_id|>\n\n", "")
+                # Enhanced cleanup for header tokens
+                clean_response = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>', '', message_content)
+                clean_response = re.sub(r'^assistant\s*', '', clean_response)
+                clean_response = clean_response.replace('<|start_header_id|>', '')
+                clean_response = clean_response.replace('<|end_header_id|>', '')
+                clean_response = clean_response.replace('assistant', '')
+                full_response = clean_response
             else:
                 # Fall back to llm_response string if available
-                full_response = str(res.llm_response or "")
+                raw_response = str(res.llm_response or "")
+                clean_response = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>', '', raw_response)
+                clean_response = re.sub(r'^assistant\s*', '', clean_response)
+                clean_response = clean_response.replace('<|start_header_id|>', '')
+                clean_response = clean_response.replace('<|end_header_id|>', '')
+                clean_response = clean_response.replace('assistant', '')
+                full_response = clean_response
             
             # If we have a queue but weren't streaming, chunk the response manually
             if chunk_queue:
@@ -111,8 +141,13 @@ def get_livepeer_response(messages, chunk_queue=None, max_tokens=256, temperatur
                 
                 # Send each chunk to the queue with a small delay
                 for chunk in chunks:
-                    chunk_queue.put(chunk)
+                    # Additional cleaning for any stray tokens in chunks
+                    clean_chunk = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>', '', chunk)
+                    clean_chunk = clean_chunk.replace('<|start_header_id|>', '')
+                    clean_chunk = clean_chunk.replace('<|end_header_id|>', '')
+                    clean_chunk = clean_chunk.replace('assistant', '')
+                    chunk_queue.put(clean_chunk)
                     time.sleep(0.1)  # Small delay between chunks
         
         print(f"Full response: {full_response}")
-        return full_response 
+        return full_response

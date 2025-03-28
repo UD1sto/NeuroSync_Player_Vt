@@ -32,7 +32,6 @@ def run_twitch_bot(message_queue, nick, token, channel):
     bot = TwitchChatBot(message_queue, nick, token, channel)
     bot.run()
 
-# --- Modified function signature to include `config` ---
 def twitch_input_worker(twitch_queue, chat_history, chunk_queue, llm_lock, config):
     """
     Worker that checks the Twitch queue every 0.5 seconds.
@@ -40,6 +39,8 @@ def twitch_input_worker(twitch_queue, chat_history, chunk_queue, llm_lock, confi
     """
     from utils.llm.llm_utils import stream_llm_chunks
     from utils.llm.chat_utils import save_chat_log
+    # Import the Livepeer handler
+    from utils.llm.livepeer_llm_handler import get_livepeer_response
     import pygame
 
     def flush_queue(q):
@@ -59,9 +60,26 @@ def twitch_input_worker(twitch_queue, chat_history, chunk_queue, llm_lock, confi
                     flush_queue(chunk_queue)
                     if pygame.mixer.get_init():
                         pygame.mixer.stop()
-                    # --- Pass the config to stream_llm_chunks ---
-                    full_response = stream_llm_chunks(twitch_message, chat_history, chunk_queue, config=config)
+                    
+                    # Check if Livepeer should be used
+                    if config.get("USE_LIVEPEER", False):
+                        # Format message for Livepeer
+                        messages = [{"role": "user", "content": twitch_message}]
+                        # Use Livepeer handler directly, similar to main.py
+                        full_response = get_livepeer_response(
+                            messages, 
+                            chunk_queue=chunk_queue, 
+                            max_tokens=256, 
+                            temperature=0.7
+                        )
+                    else:
+                        # Use the original LLM handler
+                        full_response = stream_llm_chunks(twitch_message, chat_history, chunk_queue, config=config)
+                    
                     chat_history.append({"input": twitch_message, "response": full_response})
                     save_chat_log(chat_history)
         except Empty:
             continue
+        except Exception as e:
+            print(f"Error in Twitch worker: {str(e)}")
+            continue  # Continue processing messages even if one fails 
