@@ -50,9 +50,9 @@ def flush_queue(q):
         pass
 
 # Twitch configuration from environment variables
-TWITCH_NICK = os.getenv("TWITCH_NICK", "serial_hustla")
-TWITCH_TOKEN = os.getenv("TWITCH_TOKEN", "oauth:vfplwhmunrocsrdamvcigc3un1s6e9")
-TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "serial_hustla")
+TWITCH_NICK = os.getenv("TWITCH_NICK", "")
+TWITCH_TOKEN = os.getenv("TWITCH_TOKEN", "oauth:")
+TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "")
 
 def main():
     # Initialize directories and connections
