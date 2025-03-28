@@ -1,4 +1,3 @@
-
 # twitch_llm.py
 import os
 import time
@@ -11,9 +10,6 @@ warnings.filterwarnings(
     message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work"
 )
 
-import keyboard  
-import time      
-
 from livelink.connect.livelink_init import create_socket_connection, initialize_py_face
 from livelink.animations.default_animation import default_animation_loop, stop_default_animation
 from utils.tts.tts_bridge import tts_worker
@@ -21,26 +17,27 @@ from utils.files.file_utils import initialize_directories
 from utils.llm.chat_utils import load_chat_history, save_chat_log
 from utils.llm.llm_utils import stream_llm_chunks 
 from utils.audio_face_workers import audio_face_queue_worker
-from utils.stt.transcribe_whisper import transcribe_audio
-from utils.audio.record_audio import record_audio_until_release
+from utils.llm.livepeer_llm_handler import get_livepeer_response
+
 
 from utils.streamer_utils.twitch_utils import run_twitch_bot, twitch_input_worker
 
 # Configuration for LLM and audio
-USE_LOCAL_LLM = True     
+USE_LOCAL_LLM = False    
 USE_STREAMING = True   
 LLM_API_URL = "http://127.0.0.1:5050/generate_llama"
 LLM_STREAM_URL = "http://127.0.0.1:5050/generate_stream"
 VOICE_NAME = 'Lily'
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  
+
 USE_LOCAL_AUDIO = True 
 
 llm_config = {
     "USE_LOCAL_LLM": USE_LOCAL_LLM,
     "USE_STREAMING": USE_STREAMING,
+    "USE_LIVEPEER": True,
     "LLM_API_URL": LLM_API_URL,
     "LLM_STREAM_URL": LLM_STREAM_URL,
-    "OPENAI_API_KEY": OPENAI_API_KEY,
+    "OPENAI_API_KEY": '',
     "max_chunk_length": 500,
     "flush_token_count": 300  
 }
@@ -53,9 +50,9 @@ def flush_queue(q):
         pass
 
 # Twitch configuration from environment variables
-TWITCH_NICK = os.getenv("TWITCH_NICK", "")
-TWITCH_TOKEN = os.getenv("TWITCH_TOKEN", "oauth:")
-TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "")
+TWITCH_NICK = os.getenv("TWITCH_NICK", "serial_hustla")
+TWITCH_TOKEN = os.getenv("TWITCH_TOKEN", "oauth:vfplwhmunrocsrdamvcigc3un1s6e9")
+TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "serial_hustla")
 
 def main():
     # Initialize directories and connections
@@ -85,7 +82,7 @@ def main():
     twitch_bot_thread.daemon = True
     twitch_bot_thread.start()
     
-    # --- Updated: Pass llm_config to twitch_input_worker ---
+    # Pass the llm_config to the twitch_input_worker (already done above)
     twitch_worker_thread = Thread(
         target=twitch_input_worker,
         args=(twitch_queue, chat_history, chunk_queue, llm_lock, llm_config)
@@ -93,43 +90,29 @@ def main():
     twitch_worker_thread.daemon = True
     twitch_worker_thread.start()
     
-    # --- Input Mode Handling (Text / Push-to-Talk) ---
-    mode = ""
-    while mode not in ['t', 'r']:
-        mode = input("Choose input mode: type 't' for text input or 'r' for push-to-talk recording (or 'q' to quit): ").strip().lower()
-        if mode == 'q':
-            return
-
+    # --- Text Input Mode ---
     try:
         while True:
-            if mode == 'r':
-                print("\n\nPush-to-talk mode: Press and hold the Right Ctrl key to record, then release to finish (or press 'q' to cancel).")
-                while not keyboard.is_pressed('right ctrl'):
-                    if keyboard.is_pressed('q'):
-                        print("Recording cancelled. Exiting push-to-talk mode.")
-                        return
-                    time.sleep(0.01)
-                audio_bytes = record_audio_until_release()
-                transcription, _ = transcribe_audio(audio_bytes)
-                if transcription:
-                    user_input = transcription
-                else:
-                    print("Transcription failed. Please try again.")
-                    continue
-            else:
-                user_input = input("Enter text (or 'q' to quit): ").strip()
-                if user_input.lower() == 'q':
-                    break
+            user_input = input("Enter text (or 'q' to quit): ").strip()
+            if user_input.lower() == 'q':
+                break
 
             with llm_lock:
                 flush_queue(chunk_queue)
                 flush_queue(audio_queue)
                 if pygame.mixer.get_init():
                     pygame.mixer.stop()
-                # Here we already pass the config properly.
-                full_response = stream_llm_chunks(user_input, chat_history, chunk_queue, config=llm_config)
-                chat_history.append({"input": user_input, "response": full_response})
-                save_chat_log(chat_history)
+
+                messages = []
+                
+                messages.append({"role": "user", "content": user_input})
+                
+                # Call Livepeer with chunk_queue to enable streaming
+                full_response = get_livepeer_response(messages, chunk_queue=chunk_queue, max_tokens=256, temperature=0.7)
+                if full_response:
+                    chat_history.append({"input": user_input, "response": full_response})
+                    # Don't directly queue the full response again since we're streaming chunks
+                    save_chat_log(chat_history)
 
     finally:
         chunk_queue.join()
